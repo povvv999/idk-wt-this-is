@@ -74,7 +74,7 @@ class RelayServer(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "RoamdeskRelay/0.5.0"
+    server_version = "RoamdeskRelay/0.5.1"
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *_):
@@ -132,7 +132,7 @@ class Handler(BaseHTTPRequestHandler):
     def route(self):
         if self.path == "/health" and self.command == "GET":
             return self.reply(200, {"status": "ok", "protocol": 1, "frameProtocol": 4,
-                                    "version": "0.5.0", "frameSocket": streaming.AVAILABLE,
+                                    "version": "0.5.1", "frameSocket": streaming.AVAILABLE,
                                     "frameWindow": streaming.WINDOW})
         self.account_id = None
         if not self.server.allow_anonymous:
@@ -172,8 +172,16 @@ class Handler(BaseHTTPRequestHandler):
                     host = None
                 if not self.authorized(self.server.admin_token) and host is None:
                     return self.reply(401, {"error": "Unauthorized"})
-                if host and sum(1 for room in self.server.rooms.values() if room.owner == host["id"]) >= 3:
-                    return self.reply(429, {"error": "Host session limit reached"})
+                if host:
+                    # A Mac shares one session at a time. Starting again replaces whatever it left
+                    # behind (for example after the app was quit), instead of locking it out.
+                    for stale in [item for item in self.server.rooms.values() if item.owner == host["id"]]:
+                        del self.server.rooms[stale.id]
+                        for stream in list(stale.streams):
+                            try:
+                                stream.shutdown(socket.SHUT_RDWR)
+                            except OSError:
+                                pass
                 if len(self.server.rooms) >= 16:
                     return self.reply(429, {"error": "Session limit reached"})
                 room = Room(owner=host["id"] if host else None, account=self.account_id)
