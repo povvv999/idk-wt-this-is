@@ -1,4 +1,5 @@
 """Verify account tokens against managed Auth. Never trust client-supplied user IDs."""
+import base64
 import collections
 import hashlib
 import json
@@ -41,6 +42,7 @@ class AccountAuthenticator:
             entry = self.cache.get(digest)
             if entry and now < entry[0]:
                 return entry[1]
+        profile = {'plan': 'free', 'otp_at': 0.0}
         request = urllib.request.Request(self.url, headers={'Authorization': 'Bearer ' + token, 'apikey': self.key, 'Accept': 'application/json'})
         try:
             with self.opener.open(request, timeout=5) as response:
@@ -51,6 +53,10 @@ class AccountAuthenticator:
             identity = str(uuid.UUID(user['id']))
             if user.get('is_anonymous') or not user.get('email_confirmed_at'):
                 raise AccountDenied()
+            # Only the account service can write app_metadata, so the plan can be trusted.
+            plan = (user.get('app_metadata') or {}).get('plan')
+            profile['plan'] = plan.lower() if isinstance(plan, str) and plan.lower() in ('pro', 'teams') else 'free'
+            profile['otp_at'] = self.otp_time(token)
         except urllib.error.HTTPError as error:
             status = error.code
             error.close()
@@ -60,8 +66,31 @@ class AccountAuthenticator:
         except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError, TypeError):
             raise AccountUnavailable() from None
         with self.lock:
-            self.cache[digest] = (time.monotonic() + 10, identity)
+            self.cache[digest] = (time.monotonic() + 10, identity, profile)
             self.cache.move_to_end(digest)
             while len(self.cache) > 1024:
                 self.cache.popitem(last=False)
         return identity
+
+    @staticmethod
+    def otp_time(token):
+        """When this session was confirmed with an emailed code (seconds since 1970), or 0.
+
+        Read from the token's own claims. The token was just accepted by the account
+        service, so its contents are genuine.
+        """
+        try:
+            payload = token.split('.')[1]
+            claims = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
+            stamps = [float(item.get('timestamp', 0)) for item in claims.get('amr', [])
+                      if isinstance(item, dict) and item.get('method') == 'otp']
+            return max(stamps, default=0.0)
+        except (ValueError, TypeError, IndexError, AttributeError):
+            return 0.0
+
+    def profile(self, token):
+        """Plan and emailed-code time for a token. Raises like __call__ for bad tokens."""
+        self(token)
+        with self.lock:
+            entry = self.cache.get(hashlib.sha256(token.encode()).digest())
+        return dict(entry[2]) if entry else {'plan': 'free', 'otp_at': 0.0}
