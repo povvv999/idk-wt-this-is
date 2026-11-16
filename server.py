@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pairing import handle as handle_pairing
+from pairing import handle as handle_pairing, handle_remote
 from accounts import AccountAuthenticator, AccountDenied, AccountUnavailable
 import streaming
 
@@ -65,6 +65,15 @@ class RelayServer(ThreadingHTTPServer):
         self.pair_global = collections.deque()
         self.hosts = {}
         self.registration_attempts = collections.deque()
+        self.remote = {}
+        self.remote_attempts = collections.deque()
+
+    def profile(self, token):
+        """Plan and emailed-code time for an account token."""
+        if self.allow_anonymous:
+            return {"plan": "pro", "otp_at": time.time()}
+        lookup = getattr(self.authenticator, "profile", None)
+        return lookup(token) if lookup else {"plan": "free", "otp_at": 0.0}
 
     def get_request(self):
         sock, address = super().get_request()
@@ -74,7 +83,7 @@ class RelayServer(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "RoamdeskRelay/0.5.1"
+    server_version = "RoamdeskRelay/0.6.0"
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *_):
@@ -132,7 +141,7 @@ class Handler(BaseHTTPRequestHandler):
     def route(self):
         if self.path == "/health" and self.command == "GET":
             return self.reply(200, {"status": "ok", "protocol": 1, "frameProtocol": 4,
-                                    "version": "0.5.1", "frameSocket": streaming.AVAILABLE,
+                                    "version": "0.6.0", "frameSocket": streaming.AVAILABLE,
                                     "frameWindow": streaming.WINDOW})
         self.account_id = None
         if not self.server.allow_anonymous:
@@ -145,6 +154,8 @@ class Handler(BaseHTTPRequestHandler):
             except AccountUnavailable:
                 return self.reply(503, {"error": "Account service unavailable"})
         if streaming.handle(self):
+            return
+        if handle_remote(self):
             return
         if handle_pairing(self):
             return
