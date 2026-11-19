@@ -47,8 +47,19 @@ def handle(handler):
         token = room.host_token if role == 'upload' else room.viewer_token
         if not handler.authorized(token):
             handler.reply(403); return True
-        if sum(1 for value in room.streams.values() if value == role) >= (1 if role == 'upload' else 2):
+        if role == 'upload' and 'upload' in room.streams.values():
             handler.reply(409); return True
+        viewers = [connection for connection, value in room.streams.items() if value == 'view']
+        if len(viewers) >= 2:
+            # A phone that left the app often cannot hang up first, which leaves a dead
+            # viewer behind. The viewer token proves this is the same paired phone, so the
+            # newest connection wins and the oldest one is dropped.
+            stale = viewers[0]
+            room.streams.pop(stale, None)
+            try:
+                stale.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
         room.streams[handler.connection] = role
     handler.close_connection = True
     try:
