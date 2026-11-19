@@ -74,7 +74,7 @@ class AccountAuthenticator:
 
     @staticmethod
     def otp_time(token):
-        """When this session was confirmed with an emailed code (seconds since 1970), or 0.
+        """When this session was confirmed with an emailed code or sign-in link (seconds since 1970), or 0.
 
         Read from the token's own claims. The token was just accepted by the account
         service, so its contents are genuine.
@@ -83,7 +83,7 @@ class AccountAuthenticator:
             payload = token.split('.')[1]
             claims = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
             stamps = [float(item.get('timestamp', 0)) for item in claims.get('amr', [])
-                      if isinstance(item, dict) and item.get('method') == 'otp']
+                      if isinstance(item, dict) and item.get('method') in ('otp', 'magiclink')]
             return max(stamps, default=0.0)
         except (ValueError, TypeError, IndexError, AttributeError):
             return 0.0
