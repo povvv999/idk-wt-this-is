@@ -146,7 +146,13 @@ def handle_remote(handler):
     if not isinstance(body, dict):
         handler.reply(400); return True
     profile = None
-    if parts == ["v1", "remote", "requests"] and handler.command == "POST":
+    # A phone the Mac approved before sends a proof made with a secret only that Mac and phone
+    # know. The relay cannot check it, so it skips the Pro checks and lets the Mac decide.
+    trust = body.get("trust") if parts == ["v1", "remote", "requests"] else None
+    if trust is not None and not (isinstance(trust, dict) and set(trust) == {"nonce", "time", "proof"}
+                                  and all(isinstance(value, str) and 1 <= len(value) <= 100 for value in trust.values())):
+        handler.reply(400); return True
+    if parts == ["v1", "remote", "requests"] and handler.command == "POST" and trust is None:
         try:
             profile = server.profile(handler.headers.get("X-Roamdesk-Account-Token", ""))
         except Exception:
@@ -170,17 +176,19 @@ def handle_remote(handler):
             if not isinstance(name, str) or not 1 <= len(name) <= 100:
                 handler.reply(400); return True
             host["name"] = name; host["seen"] = now; host["remote"] = body.get("remote") is True
-            waiting = next((item for item in server.remote.values() if item["host"] == host["id"] and item["status"] == "verified"), None)
-            handler.reply(200, {"request": {"id": waiting["id"]} if waiting and host["remote"] else None}); return True
+            waiting = next((item for item in server.remote.values() if item["host"] == host["id"] and item["status"] == "verified"
+                            and (host["remote"] or item.get("trust"))), None)
+            reply = {"id": waiting["id"], "trust": waiting["trust"]} if waiting and waiting.get("trust") else {"id": waiting["id"]} if waiting else None
+            handler.reply(200, {"request": reply}); return True
         if parts == ["v1", "remote", "requests"] and handler.command == "POST":
-            if profile["plan"] not in ("pro", "teams"):
+            if trust is None and profile["plan"] not in ("pro", "teams"):
                 handler.reply(402, {"error": "Remote connect needs Pro"}); return True
-            if time.time() - profile["otp_at"] > OTP_WINDOW:
+            if trust is None and time.time() - profile["otp_at"] > OTP_WINDOW:
                 handler.reply(428, {"error": "Confirm the emailed code first"}); return True
             host = next((item for item in server.hosts.values() if item["id"] == body.get("hostId") and mine(item)), None)
             if host is None:
                 handler.reply(404); return True
-            if now - host.get("seen", -1e9) >= ONLINE_WINDOW or not host.get("remote"):
+            if now - host.get("seen", -1e9) >= ONLINE_WINDOW or not (host.get("remote") or trust):
                 handler.reply(409, {"error": "That Mac is offline"}); return True
             while server.remote_attempts and now - server.remote_attempts[0] >= 3600:
                 server.remote_attempts.popleft()
@@ -189,7 +197,7 @@ def handle_remote(handler):
             server.remote_attempts.append(now)
             server.remote = {key: item for key, item in server.remote.items() if item["host"] != host["id"]}
             request = {"id": str(uuid.uuid4()), "token": secrets.token_urlsafe(32), "host": host["id"],
-                       "status": "verified", "created": now, "code": None}
+                       "status": "verified", "created": now, "code": None, "trust": trust}
             server.remote[request["id"]] = request
             handler.reply(201, {"id": request["id"], "token": request["token"]}); return True
         if len(parts) == 4 and parts[:3] == ["v1", "remote", "requests"] and handler.command == "GET":
